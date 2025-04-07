@@ -17,13 +17,18 @@ BASELINE_EYE_CLOSED = [2]
 IMAGINE_OPEN_CLOSE_LEFT_RIGHT_FIST = [4, 8, 12]
 SELECTED_CHANNELS = [8,9,1,2,15,16, 11,12,4,5,18,19]
 num_chan_per_hemi=len(SELECTED_CHANNELS)//2
+fs=126
+
 num_runs_sub=3
 needed_subs=109
 low_rest=1
 high_rest=20
 low_MI=8
 high_MI=12
-fs=126
+needed_ratio=1.2
+
+rest_plotting=False
+MI_plotting=False
 
 #################################################################################################################################################### Rest
 def raw_rest_processing(raw):
@@ -97,6 +102,7 @@ def subject_select(mid,other):
         res="Weak"
     confidence=num_majority_votes/n_segments
     return res, confidence
+
 def rest_plotting(data,res_up,res_down,confidence_up,confidence_down,sub):
         # Define a custom colormap
         colors = [
@@ -137,12 +143,10 @@ physionet_paths = np.concatenate(physionet_paths)
 # Read EDF files
 parts = [mne.io.read_raw_edf(path,preload=True,stim_channel='auto',verbose='WARNING')for path in physionet_paths]
 
-# Process each subject (every 1 file per subject in this case)
-labels={}
 patterns={}
-confidences={}
-confidences_multi={}
-needed_ratio=1.2
+confidences={} # absolute
+confidences_multi={} # both +ve and -ve
+
 
 
 for sub, raw in enumerate(parts):
@@ -153,8 +157,10 @@ for sub, raw in enumerate(parts):
     avg_mid_freq=data[8:11,:].mean(axis=0)
     avg_below_freq=data[2:8,:].mean(axis=0)
     avg_above_freq=data[11:15,:].mean(axis=0)
+
     res_down, confidence_down=subject_select(avg_mid_freq,avg_below_freq)
     res_up, confidence_up=subject_select(avg_mid_freq,avg_above_freq)
+
     if confidence_up > confidence_down:
         patterns[sub+1] = res_up
         confidences[sub+1] = confidence_up
@@ -162,13 +168,14 @@ for sub, raw in enumerate(parts):
         patterns[sub+1]  = res_down
         confidences[sub+1] = confidence_down
 
-    #rest_plotting(data,res_up,res_down,confidence_up,confidence_down,sub)
+    if rest_plotting:
+        rest_plotting(data,res_up,res_down,confidence_up,confidence_down,sub)
 
-for k in [k for k, v in patterns.items() if v == "Weak"]:
+for k in [k for k, v in patterns.items() if v == "Weak"]: #remove weak
     del patterns[k]
     del confidences[k]
 
-for k in [38,88,89,92,100,104]:
+for k in [38,88,89,92,100,104]: #remove incorrecrt datapoints
     if k in patterns:
         del patterns[k]
         del confidences[k]
@@ -178,7 +185,7 @@ subs_taken=list(patterns.keys())
 subs_pattern_B = [k for k, v in patterns.items() if v == "Pattern B"]
 confidences_multi = {k: (v if patterns[k] == "Pattern B" else -v) for k, v in confidences.items()}
 
-stop=1
+
 #################################################################################################################################################### MI
 def raw_MI_processing(raw):
     raw.filter(l_freq=low_MI, h_freq=high_MI, picks="eeg", verbose='WARNING')
@@ -236,8 +243,8 @@ def res_plotting(x_vals,y_vals,keys,subs_pattern_B):
 def res_stats(x_vals,y_vals,confidences_multi):
     r_x, p_value_x = pearsonr(np.array(x_vals).flatten(),  np.array(list(confidences_multi.values())).flatten())
     r_y, p_value_y = pearsonr(np.array(y_vals).flatten(),  np.array(list(confidences_multi.values())).flatten())
-
-
+    print(r_x, p_value_x)
+    print(r_y, p_value_y)
 
     X = np.column_stack((x_vals, y_vals))  # shape (n_samples, 2)
     y = np.array(list(confidences_multi.values()))
@@ -245,8 +252,6 @@ def res_stats(x_vals,y_vals,confidences_multi):
     model = LinearRegression()
     model.fit(X, y)
 
-    #print("R²:", model.score(X, y))  # overall correlation
-    #print("Coefficients:", model.coef_)
     X = sm.add_constant(X)  # adds intercept
     model = sm.OLS(y, X).fit()
     print(model.summary())
@@ -299,9 +304,9 @@ raws = [mne.io.read_raw_edf(path,preload=True,stim_channel='auto',verbose='WARNI
 # Process runs in groups of 3 (each subject)
 my_dic_x={}
 my_dic_y={}
-my_dic_acc={}
 for beg_global_run_idx in range(0, len(raws), num_runs_sub):
-    #fig, axs = plt.subplots(1, num_runs_sub, figsize=(15, 5), sharex=True, sharey=True)
+    if MI_plotting:
+        fig, axs = plt.subplots(1, num_runs_sub, figsize=(15, 5), sharex=True, sharey=True)
     delta_x_list = []
     delta_y_list = []
     for local_run_index in range(num_runs_sub): 
@@ -323,18 +328,20 @@ for beg_global_run_idx in range(0, len(raws), num_runs_sub):
             
         delta_x_list.append(dx)
         delta_y_list.append(dy)
-
-        #run_plot(x_left,x_right)
+        
+        if MI_plotting:
+            run_plot(x_left,x_right)
 
     sub = beg_global_run_idx // num_runs_sub + 1
     if sub in subs_taken:
         my_dic_x[sub]=np.mean(delta_x_list)
         my_dic_y[sub]=np.mean(delta_y_list)
 
-        # fig.suptitle(f"2D Plots - Subject {sub} | Avg ΔX: {np.mean(delta_x_list):.8f}, Avg ΔY: {np.mean(delta_y_list):.8f}")
-        # plt.tight_layout(rect=[0, 0, 1, 0.95])
-        # plt.savefig(fr"MI_subject_{sub}.png")
-        # plt.close()
+    if MI_plotting:
+        fig.suptitle(f"2D Plots - Subject {sub} | Avg ΔX: {np.mean(delta_x_list):.8f}, Avg ΔY: {np.mean(delta_y_list):.8f}")
+        plt.tight_layout(rect=[0, 0, 1, 0.95])
+        plt.savefig(fr"MI_subject_{sub}.png")
+        plt.close()
 
 
 

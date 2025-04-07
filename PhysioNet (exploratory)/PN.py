@@ -1,5 +1,6 @@
 import mne
 from scipy.signal import stft
+import os
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
@@ -9,47 +10,42 @@ from scipy.stats import pearsonr
 from collections import Counter
 from sklearn.linear_model import LinearRegression
 import statsmodels.api as sm
-from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
-from mne.decoding import CSP
-from sklearn.metrics import accuracy_score
-from sklearn.model_selection import train_test_split
-import numpy as np
-import matplotlib.pyplot as plt
-from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
-from sklearn.model_selection import train_test_split
-from mne.decoding import CSP  # Assuming you're using MNE's CSP
-from sklearn.svm import SVC
 warnings.filterwarnings("ignore")
 
-baseline_session_id = [2]
-MI_sessions = [4, 8, 12]
-selected_channels = [8,9,1,15,16, 11,12,4,18,19]; num_chan_per_hemi=len(selected_channels)//2
-needed_subs=109
+N_SUBJECT = 109
+BASELINE_EYE_CLOSED = [2]
+IMAGINE_OPEN_CLOSE_LEFT_RIGHT_FIST = [4, 8, 12]
+SELECTED_CHANNELS = [8,9,1,2,15,16, 11,12,4,5,18,19]
+num_chan_per_hemi=len(SELECTED_CHANNELS)//2
 num_runs_sub=3
-take_nonA_B_C=False
-only_A_B=True
-plot_rest_flag=True
-plot_MI_flag=True
-fs=126
+needed_subs=109
 low_rest=1
 high_rest=20
 low_MI=8
 high_MI=12
+fs=126
 
 #################################################################################################################################################### Rest
 def raw_rest_processing(raw):
     raw.filter(l_freq=low_rest, h_freq=high_rest, picks="eeg", verbose='WARNING')
     events, _ = mne.events_from_annotations(raw)
+
     raw.rename_channels(lambda name: name.replace('.', '').strip().upper())
-    df = pd.read_csv(fr"C:\Users\mnaser1\OneDrive - Kennesaw State University\Desktop\PhD-S7\Dissertation\BCI-Dissertation\After_Internship\Frontiers\All_sessions\PhysioNet\64montage.csv", header=None, names=["name", "x", "y", "z"])    
+    df = pd.read_csv(fr"64montage.csv", header=None, names=["name", "x", "y", "z"])    
     ch_pos = {row['name']: [row['x'], row['y'], row['z']] for _, row in df.iterrows()}
     montage = mne.channels.make_dig_montage(ch_pos=ch_pos, coord_frame='head')
     raw.set_montage(montage,on_missing="warn")
-    valid_chs = [ch['ch_name'] for ch in raw.info['chs'] if ch['loc'] is not None and not np.allclose(ch['loc'][:3], 0) and not np.isnan(ch['loc'][:3]).any()]
+    valid_chs = [
+    ch['ch_name'] for ch in raw.info['chs']
+    if ch['loc'] is not None and not np.allclose(ch['loc'][:3], 0) and not np.isnan(ch['loc'][:3]).any()
+    ]
     raw= raw.copy().pick_channels(valid_chs)
+
     raw = mne.preprocessing.compute_current_source_density(raw)
     #raw.plot_sensors(show_names=True)  # just to verify positions
-    epoched = mne.Epochs(raw,events,event_id=dict(rest=1),tmin=1,tmax=59,proj=False,picks=selected_channels,baseline=None,preload=True)
+
+    epoched = mne.Epochs(raw,events,event_id=dict(rest=1),tmin=1,tmax=59,proj=False,picks=SELECTED_CHANNELS,baseline=None,preload=True)
+
     return epoched
 def rest_data_generation(epoched):
     X = (epoched.get_data() * 1e3).astype(np.float32)
@@ -70,78 +66,38 @@ def rest_data_generation(epoched):
     data = (Zxx1_mean - Zxx2_mean).squeeze()
 
     return data
-def subject_select():
-    data_mid=data[8:11,:].mean(axis=0)
-    data_below=data[2:8,:].mean(axis=0)
-    data_above=data[11:15,:].mean(axis=0)
-
+def subject_select(mid,other):
     segment_size = 10
-    n_segments = len(data_mid) // segment_size
-    ###################################################################################### below
-    ratio = [data_mid[i]/data_below[i] for i in range(n_segments)]
+    n_segments = len(mid) // segment_size
+    ratio = [mid[i]/other[i] for i in range(n_segments)]
+
+    #"11": strong, positive (mainly yellow)
+    #"10": strong, negative (mainly blue)
+    #"0X": weak 
 
     votes=[]
-    for r in ratio:
-        if r > needed_ratio:
+    for ratio in ratio:
+        if ratio > needed_ratio:
             votes.append("11") 
-        elif r < -needed_ratio:
+        elif ratio < -needed_ratio:
             votes.append("10")
         else:
-            if r <needed_ratio_weak and r >-needed_ratio_weak:
-                votes.append("01")
-            else:
-                votes.append("00")
+            votes.append("0X")
+
 
     vote_counts = Counter(votes)
     majority_vote, num_majority_votes = vote_counts.most_common(1)[0]
 
-    if majority_vote=="11" and num_majority_votes>=7:
-        res_below="Pattern B"
-    elif majority_vote=="10" and num_majority_votes>=7:
-        res_below="Pattern A"
-    elif majority_vote=="01" and num_majority_votes>=7:
-        res_below="Pattern C (weak)"
-    else:
-        res_below="ignore"
-    confidence_below=num_majority_votes/n_segments
 
-    ###################################################################################### above
-    ratio = [data_mid[i]/data_above[i] for i in range(n_segments)]
-    votes=[]
-    for r in ratio:
-        if r > needed_ratio:
-            votes.append("11") 
-        elif r < -needed_ratio:
-            votes.append("10")
-        else:
-            if r <needed_ratio_weak and r >-needed_ratio_weak:
-                votes.append("01")
-            else:
-                votes.append("00")
-
-    vote_counts = Counter(votes)
-    majority_vote, num_majority_votes = vote_counts.most_common(1)[0]
-
-    if majority_vote=="11" and num_majority_votes>=7:
-        res_above="Pattern B"
-    elif majority_vote=="10" and num_majority_votes>=7:
-        res_above="Pattern A"
-    elif majority_vote=="01" and num_majority_votes>=7:
-        res_above="Pattern C (weak)"
-    else:
-        res_above="ignore"
-    confidence_above=num_majority_votes/n_segments
-
-    #########################################################################
-    if confidence_above > confidence_below:
-        patterns[sub+1] = res_above
-        confidences[sub+1] = confidence_above            
-    else:
-        patterns[sub+1] = res_below
-        confidences[sub+1] = confidence_below     
-
-    return 
-def rest_plotting():
+    if majority_vote=="11":
+        res="Pattern B"
+    if majority_vote=="10":
+        res="Pattern A"
+    if majority_vote=="0X":
+        res="Weak"
+    confidence=num_majority_votes/n_segments
+    return res, confidence
+def rest_plotting(data,res_up,res_down,confidence_up,confidence_down,sub):
         # Define a custom colormap
         colors = [
             (0, 'blue'),
@@ -165,71 +121,71 @@ def rest_plotting():
         )
         plt.colorbar(label="Value")
         plt.title(f"Subject {sub+1} - Left hemi vs Right hemi")
+        plt.text(40, 10, f"with up: {res_up}, confidence: {confidence_up}", fontsize=12,color="white")  
+        plt.text(40, 5, f"with down: {res_down}, confidence: {confidence_down}", fontsize=12,color="white")  
+        
         plt.xlabel("Timepoint")
         plt.ylabel("Frequency")
         plt.ylim(0, 20)
-        plt.savefig(fr"C:\Users\mnaser1\OneDrive - Kennesaw State University\Desktop\PhD-S7\Dissertation\BCI-Dissertation\After_Internship\Frontiers\All_sessions\PhysioNet\rest_subject_{sub+1}.png")
+        plt.savefig(fr"rest_subject_{sub+1}.png")
         plt.close()
-def finalize_results():
-    if only_A_B:
-        for k in [k for k, v in patterns.items() if v == "ignore" or v =="Pattern C (weak)"]:
-            del patterns[k]
-            del confidences[k]
-    else:
-        if take_nonA_B_C:
-            for i,pat in patterns.items():
-                if pat=="ignore":
-                    patterns[i]="Pattern C (weak)"
-        else:
-            for k in [k for k, v in patterns.items() if v == "ignore"]:
-                del patterns[k]
-                del confidences[k]
 
+# Download/load data paths
+physionet_paths = [mne.datasets.eegbci.load_data(subject_id,BASELINE_EYE_CLOSED,"/root/mne_data" ) for subject_id in range(1, needed_subs + 1) ]
+physionet_paths = np.concatenate(physionet_paths)
 
-    subs_taken=list(patterns.keys())
-    subs_pattern_B = [k for k, v in patterns.items() if v == "Pattern B"]
-    subs_pattern_A = [k for k, v in patterns.items() if v == "Pattern A"]
-
-    for element in patterns.values():
-        if element=="Pattern A":
-            label_stat.append(0) 
-        if element=="Pattern B":
-            label_stat.append(1) 
-        if element=="Pattern C (weak)":
-            label_stat.append(.5) 
-    return subs_taken, subs_pattern_B, subs_pattern_A
-
-
-physionet_paths = [mne.datasets.eegbci.load_data(subject_id,baseline_session_id,"/root/mne_data" ) for subject_id in range(1, needed_subs + 1) ]; physionet_paths = np.concatenate(physionet_paths)
-
+# Read EDF files
 parts = [mne.io.read_raw_edf(path,preload=True,stim_channel='auto',verbose='WARNING')for path in physionet_paths]
 
-needed_ratio=1.35
-needed_ratio_weak=1.35
+# Process each subject (every 1 file per subject in this case)
+labels={}
 patterns={}
 confidences={}
 confidences_multi={}
-label_stat=[]
+needed_ratio=1.2
+
 
 for sub, raw in enumerate(parts):
     epoched=raw_rest_processing(raw)
 
     data=rest_data_generation(epoched)
 
-    subject_select()
+    avg_mid_freq=data[8:11,:].mean(axis=0)
+    avg_below_freq=data[2:8,:].mean(axis=0)
+    avg_above_freq=data[11:15,:].mean(axis=0)
+    res_down, confidence_down=subject_select(avg_mid_freq,avg_below_freq)
+    res_up, confidence_up=subject_select(avg_mid_freq,avg_above_freq)
+    if confidence_up > confidence_down:
+        patterns[sub+1] = res_up
+        confidences[sub+1] = confidence_up
+    else:
+        patterns[sub+1]  = res_down
+        confidences[sub+1] = confidence_down
 
-    rest_plotting() if plot_rest_flag==True else None
+    #rest_plotting(data,res_up,res_down,confidence_up,confidence_down,sub)
 
-subs_taken, subs_pattern_B, subs_pattern_A=finalize_results()
-#final results needed for later on: patterns, confidences, label_stat, subs_taken, subs_pattern_B, subs_pattern_A
+for k in [k for k, v in patterns.items() if v == "Weak"]:
+    del patterns[k]
+    del confidences[k]
 
+for k in [38,88,89,92,100,104]:
+    if k in patterns:
+        del patterns[k]
+        del confidences[k]
+
+
+subs_taken=list(patterns.keys())
+subs_pattern_B = [k for k, v in patterns.items() if v == "Pattern B"]
+confidences_multi = {k: (v if patterns[k] == "Pattern B" else -v) for k, v in confidences.items()}
+
+stop=1
 #################################################################################################################################################### MI
 def raw_MI_processing(raw):
     raw.filter(l_freq=low_MI, h_freq=high_MI, picks="eeg", verbose='WARNING')
     
     raw.rename_channels(lambda name: name.replace('.', '').strip().upper())
     
-    df = pd.read_csv(fr"C:\Users\mnaser1\OneDrive - Kennesaw State University\Desktop\PhD-S7\Dissertation\BCI-Dissertation\After_Internship\Frontiers\All_sessions\PhysioNet\64montage.csv", header=None, names=["name", "x", "y", "z"])    
+    df = pd.read_csv(fr"64montage.csv", header=None, names=["name", "x", "y", "z"])    
     ch_pos = {row['name']: [row['x'], row['y'], row['z']] for _, row in df.iterrows()}
     montage = mne.channels.make_dig_montage(ch_pos=ch_pos, coord_frame='head')
     raw.set_montage(montage,on_missing="warn")
@@ -241,7 +197,7 @@ def raw_MI_processing(raw):
 
     events, _ = mne.events_from_annotations(raw)
 
-    epoched = mne.Epochs(raw, events, dict(left=2, right=3), tmin=1, tmax=4.1,proj=False, picks=selected_channels, baseline=None, preload=True)
+    epoched = mne.Epochs(raw, events, dict(left=2, right=3), tmin=1, tmax=4.1,proj=False, picks=SELECTED_CHANNELS, baseline=None, preload=True)
     return epoched
 def MI_data_generation(epoched):
     X = (epoched.get_data() * 1e3).astype(np.float32)
@@ -259,8 +215,7 @@ def MI_data_generation(epoched):
     x_right = X_avg[:, 1]
 
     return x_left,x_right,y
-
-def res_plotting(x_vals,y_vals,keys,subs_pattern_B,subs_pattern_A):
+def res_plotting(x_vals,y_vals,keys,subs_pattern_B):
     # Plot
     plt.clf()
 
@@ -272,18 +227,20 @@ def res_plotting(x_vals,y_vals,keys,subs_pattern_B,subs_pattern_A):
 
     # Plot points and labels with appropriate color
     for x, y, label in zip(x_vals, y_vals, keys):
-        color = 'black' if label in subs_pattern_B else 'red' if label in subs_pattern_A else "blue"
+        color = 'black' if label in subs_pattern_B else 'red'
         plt.scatter(x, y, color=color)
         # plt.xscale('symlog', linthresh=1e-5)  # Adjust linthresh for better visibility
         # plt.yscale('symlog', linthresh=1e-5)
         plt.text(x, y, label, fontsize=9, ha='right', va='bottom', color=color)
-    plt.savefig(fr"C:\Users\mnaser1\OneDrive - Kennesaw State University\Desktop\PhD-S7\Dissertation\BCI-Dissertation\After_Internship\Frontiers\All_sessions\PhysioNet\final")
+    plt.savefig(fr"final")
 def res_stats(x_vals,y_vals,confidences_multi):
-    r_x, p_value_x = pearsonr(np.array(x_vals).flatten(),  np.array(confidences_multi).flatten())
-    r_y, p_value_y = pearsonr(np.array(y_vals).flatten(),  np.array(confidences_multi).flatten())
+    r_x, p_value_x = pearsonr(np.array(x_vals).flatten(),  np.array(list(confidences_multi.values())).flatten())
+    r_y, p_value_y = pearsonr(np.array(y_vals).flatten(),  np.array(list(confidences_multi.values())).flatten())
+
+
 
     X = np.column_stack((x_vals, y_vals))  # shape (n_samples, 2)
-    y = np.array(confidences_multi).flatten()
+    y = np.array(list(confidences_multi.values()))
 
     model = LinearRegression()
     model.fit(X, y)
@@ -294,7 +251,7 @@ def res_stats(x_vals,y_vals,confidences_multi):
     model = sm.OLS(y, X).fit()
     print(model.summary())
     stop=1
-def run_plot():
+def run_plot(x_left,x_right):
 
     mask_blue = y == 0
     mask_yellow = y == 1
@@ -319,8 +276,8 @@ def run_plot():
     dx = center_yellow[0] - center_blue[0]
     dy = center_yellow[1] - center_blue[1]
 
-    delta_x_run.append(dx)
-    delta_y_run.append(dy)
+    delta_x_list.append(dx)
+    delta_y_list.append(dy)
 
     ax.scatter(*center_blue, color='darkblue', edgecolor='white', s=100, label='Center LH_MI', marker='s', zorder=5)
     ax.scatter(*center_yellow, color='orange', edgecolor='black', s=100, label='Center RH_MI', marker='s', zorder=5)
@@ -331,51 +288,73 @@ def run_plot():
         ax.set_ylabel("Y")
     ax.grid(True)
     ax.legend()
-def find_deltas():
-    mask_blue = y == 0
-    mask_yellow = y == 1
-    center_blue = (x_left[mask_blue].mean(), x_right[mask_blue].mean())
-    center_yellow = (x_left[mask_yellow].mean(), x_right[mask_yellow].mean())
-    dx = center_yellow[0] - center_blue[0]
-    dy = center_yellow[1] - center_blue[1]
-        
-    delta_x_run.append(dx)
-    delta_y_run.append(dy)
-def sub_plot():
-    fig.suptitle(f"2D Plots - Subject {sub} | Avg ΔX: {np.mean(delta_x_run):.8f}, Avg ΔY: {np.mean(delta_y_run):.8f}")
-    plt.tight_layout(rect=[0, 0, 1, 0.95])
-    plt.savefig(fr"C:\Users\mnaser1\OneDrive - Kennesaw State University\Desktop\PhD-S7\Dissertation\BCI-Dissertation\After_Internship\Frontiers\All_sessions\PhysioNet\MI_subject_{sub}.png")
-    plt.close()
-physionet_paths = [ mne.datasets.eegbci.load_data(id,MI_sessions,"/root/mne_data",) for id in range(1, needed_subs + 1)  ]; physionet_paths = np.concatenate(physionet_paths)
 
+#Load PhysioNet paths
+physionet_paths = [ mne.datasets.eegbci.load_data(id,IMAGINE_OPEN_CLOSE_LEFT_RIGHT_FIST,"/root/mne_data",) for id in range(1, needed_subs + 1)  ]
+physionet_paths = np.concatenate(physionet_paths)
+
+# Read EDF files
 raws = [mne.io.read_raw_edf(path,preload=True,stim_channel='auto',verbose='WARNING',) for path in physionet_paths]
 
-delta_x_sub={}
-delta_y_sub={}
-feature_dic={}
+# Process runs in groups of 3 (each subject)
+my_dic_x={}
+my_dic_y={}
+my_dic_acc={}
 for beg_global_run_idx in range(0, len(raws), num_runs_sub):
+    #fig, axs = plt.subplots(1, num_runs_sub, figsize=(15, 5), sharex=True, sharey=True)
+    delta_x_list = []
+    delta_y_list = []
+    for local_run_index in range(num_runs_sub): 
+        global_run_idx = beg_global_run_idx + local_run_index
+        if global_run_idx >= len(raws):
+            break  
+        raw = raws[global_run_idx]
+        epoched=raw_MI_processing(raw)
+        x_left,x_right,y=MI_data_generation(epoched)
+
+
+        # Compute and plot centers
+        mask_blue = y == 0
+        mask_yellow = y == 1
+        center_blue = (x_left[mask_blue].mean(), x_right[mask_blue].mean())
+        center_yellow = (x_left[mask_yellow].mean(), x_right[mask_yellow].mean())
+        dx = center_yellow[0] - center_blue[0]
+        dy = center_yellow[1] - center_blue[1]
+            
+        delta_x_list.append(dx)
+        delta_y_list.append(dy)
+
+        #run_plot(x_left,x_right)
+
     sub = beg_global_run_idx // num_runs_sub + 1
-    if sub in subs_taken:    
+    if sub in subs_taken:
+        my_dic_x[sub]=np.mean(delta_x_list)
+        my_dic_y[sub]=np.mean(delta_y_list)
 
-        fig, axs = plt.subplots(1, num_runs_sub, figsize=(15, 5), sharex=True, sharey=True)
+        # fig.suptitle(f"2D Plots - Subject {sub} | Avg ΔX: {np.mean(delta_x_list):.8f}, Avg ΔY: {np.mean(delta_y_list):.8f}")
+        # plt.tight_layout(rect=[0, 0, 1, 0.95])
+        # plt.savefig(fr"MI_subject_{sub}.png")
+        # plt.close()
 
-        delta_x_run = []
-        delta_y_run = []
-        for local_run_index in range(num_runs_sub): 
-            global_run_idx = beg_global_run_idx + local_run_index
-            raw = raws[global_run_idx]
-            epoched=raw_MI_processing(raw)
-            x_left,x_right,y=MI_data_generation(epoched)
-            run_plot()
-            find_deltas()
 
-        delta_x_sub[sub]=np.mean(delta_x_run)
-        delta_y_sub[sub]=np.mean(delta_y_run)
-        sub_plot() if plot_MI_flag==True else None
 
-x_vals = list(delta_x_sub.values())
-y_vals = list(delta_y_sub.values())
-res_plotting(x_vals,y_vals,subs_taken,subs_pattern_B,subs_pattern_A)
-res_stats(x_vals,y_vals,label_stat)
+x_vals = [my_dic_x[k] for k in my_dic_x]
+y_vals = [my_dic_y[k] for k in my_dic_y]  
+keys = list(my_dic_y.keys())
+
+res_plotting(x_vals,y_vals,keys,subs_pattern_B)
+res_stats(x_vals,y_vals,confidences_multi)
+
+
 
 stop=1
+
+
+
+
+
+
+
+
+
+

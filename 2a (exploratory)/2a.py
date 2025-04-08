@@ -11,13 +11,30 @@ from sklearn.metrics import r2_score
 from scipy.stats import pearsonr
 from scipy.stats import f_oneway
 from matplotlib.colors import LinearSegmentedColormap
-from scipy.spatial import KDTree
-from mne.preprocessing import ICA
 from scipy.stats import spearmanr
 from scipy.stats import kendalltau
-##################################### Functions
+from collections import Counter
+import pandas as pd
+import statsmodels.api as sm
+##################################### Inputs
+sfreq = 250 # sampling frequency
+sess=[i for i in range(1,19)] # list of sessions (for all 9 subjects). Two sessions per subject so the total is 18.
+f_low_rest=1   # low frequency
+f_high_rest=15 # high frequency
+f_low_MI=8   # low frequency
+f_high_MI=12 # high frequency
+tmin_rest = 1  # start of time for rest[s]
+tmax_rest = 59 # end time for rest [s]
+tmin_MI = 1
+tmax_MI = 4
+############################################################################## Rest
+patterns={}
+confidences={} # absolute
+confidences_multi={} # both +ve and -ve
+needed_ratio=1.2
+
 def load_data(ses, data_type):
-    my_file = fr"C:\Users\mnaser1\OneDrive - Kennesaw State University\Desktop\PhD-S7\Dissertation\BCI-Dissertation\After_Internship\Frontiers\Data\full_2a_data\Data\{ses}.mat"
+    my_file = fr"C:\Users\mnaser1\OneDrive - Kennesaw State University\Desktop\PhD-S7\Dissertation\Data\2a2b data\full_2a_data\Data\{ses-1}.mat"
     mat_data = scipy.io.loadmat(my_file)
     if data_type == 'rest':
         my_data_eeg = np.squeeze(mat_data['data'][0][1][0][0][0][:, 0:22]) # the first 22 channels are EEG
@@ -35,7 +52,33 @@ def create_mne_raw(data):
     return raw
 def process_rest_data(raw):
     raw.filter(f_low_rest, f_high_rest, fir_design='firwin') # FIR filtration to keep a range of frequencies
-    picks = ["8", "9", "14", "15", "11", "12", "17", "18"]     # the channels to consider (refer to data description)
+    
+
+    df = pd.read_csv(fr"25montage.csv", header=None, names=["name", "x", "y", "z"])
+    ch_pos = {
+        str(row['name']): np.array([row['x'], row['y'], row['z']])
+        for _, row in df.iterrows()
+    }
+
+    montage = mne.channels.make_dig_montage(ch_pos=ch_pos, coord_frame='head')
+    raw.set_montage(montage, on_missing="warn")
+
+
+    valid_chs = [
+        ch['ch_name'] for ch in raw.info['chs']
+        if ch['loc'] is not None
+        and not np.allclose(ch['loc'][:3], 0)
+        and not np.isnan(ch['loc'][:3]).any()
+]
+
+    raw = raw.copy().pick_channels(valid_chs)
+
+    raw = mne.preprocessing.compute_current_source_density(raw)
+    #raw.plot_sensors(show_names=True)  # just to verify positions
+    
+
+    
+    picks = ["8", "9", "14", "15","2","3",   "11", "12", "17", "18", "5", "6"]     # the channels to consider (refer to data description)
     epoch_length_samples = int((tmax_rest-tmin_rest) * raw.info['sfreq'])
     n_samples = len(raw)
 
@@ -44,13 +87,109 @@ def process_rest_data(raw):
     events = np.column_stack((event_times, np.zeros_like(event_times, dtype=int), np.ones_like(event_times, dtype=int)))
     epochs = mne.Epochs(raw, events, event_id=1, tmin=tmin_rest, tmax=tmax_rest, baseline=None, preload=True, picks=picks)
     
-    data_rest_1  = np.mean(epochs.get_data()[0][:4, :], axis=0) # the first 4 channels are in the left hemisphere
-    data_rest_2  = np.mean(epochs.get_data()[0][4:, :], axis=0) # the last 4 channels are in the right hemisphere
+    data_rest_1  = np.mean(epochs.get_data()[0][:6, :], axis=0) # the first 4 channels are in the left hemisphere
+    data_rest_2  = np.mean(epochs.get_data()[0][6:, :], axis=0) # the last 4 channels are in the right hemisphere
     
-    _, _, Zxx1 = stft(data_rest_1, 250, nperseg=250) # generating time-frequency map using STFT
-    _, _, Zxx2 = stft(data_rest_2, 250, nperseg=250) # generating time-frequency map using STFT
+    f, _, Zxx1 = stft(data_rest_1, 250, nperseg=250) # generating time-frequency map using STFT
+    f, _, Zxx2 = stft(data_rest_2, 250, nperseg=250) # generating time-frequency map using STFT
     
     return np.abs(Zxx1), np.abs(Zxx2), np.abs(Zxx1)-np.abs(Zxx2)
+def subject_select(mid,other):
+    segment_size = 10
+    n_segments = len(mid) // segment_size
+    ratio = [mid[i]/other[i] for i in range(n_segments)]
+
+    #"11": strong, positive (mainly yellow)
+    #"10": strong, negative (mainly blue)
+    #"0X": weak 
+
+    votes=[]
+    for ratio in ratio:
+        if ratio > needed_ratio:
+            votes.append("11") 
+        elif ratio < -needed_ratio:
+            votes.append("10")
+        else:
+            votes.append("0X")
+
+
+    vote_counts = Counter(votes)
+    majority_vote, num_majority_votes = vote_counts.most_common(1)[0]
+
+
+    if majority_vote=="11":
+        res="Pattern B"
+    if majority_vote=="10":
+        res="Pattern A"
+    if majority_vote=="0X":
+        res="Weak"
+    confidence=num_majority_votes/n_segments
+    return res, confidence
+def plotting_rest_maps(data):
+    
+    # Define a custom colormap
+    colors = [
+        (0, 'blue'),   # Low values
+        (0.3, 'skyblue'),  # Middle values (around 0)
+        (0.5, 'black'),  # Middle values (around 0)
+        (0.7, 'lightyellow'),  # Middle values (around 0)
+        (1, 'yellow')       # High values
+    ]
+    custom_cmap = LinearSegmentedColormap.from_list("custom_cmap", colors)
+
+    # Plot heatmap
+    plt.figure(figsize=(8, 6))
+    plt.imshow(
+        data,
+        aspect='auto',
+        cmap=custom_cmap,
+        interpolation='nearest',
+        vmin=-.004,   # Set minimum value for color scale
+        vmax=.004    # Set maximum value for color scale
+    )
+    plt.colorbar(label="Value")
+    plt.title(fr"{ses} Left hemi - Right hemi")
+    plt.xlabel("Time")
+    plt.ylabel("Frequency")
+    plt.ylim(0, 20)  # Ensure y-axis matches the full range
+    plt.savefig(fr"Rest_{ses}.png")
+    plt.close()  # Close the figure to free memory
+
+    return()
+
+for ses in sess:
+    rest_data, _= load_data(ses, 'rest')
+    raw = create_mne_raw(rest_data)
+    _,_, data_rest_diff_tf_abs = process_rest_data(raw) # number 1 is left hemisphere, 2 is right hemisphere
+    plotting_rest_maps(data_rest_diff_tf_abs)
+
+    avg_mid_freq=np.mean(data_rest_diff_tf_abs[7:13,:],axis=0)
+    avg_below_freq=np.mean(data_rest_diff_tf_abs[2:7,:],axis=0)
+    avg_above_freq=np.mean(data_rest_diff_tf_abs[13:18,:],axis=0)
+
+    res_down, confidence_down=subject_select(avg_mid_freq,avg_below_freq)
+    res_up, confidence_up=subject_select(avg_mid_freq,avg_above_freq)
+
+    if confidence_up >= confidence_down:
+        patterns[ses] = res_up
+        confidences[ses] = confidence_up
+    else:
+        patterns[ses]  = res_down
+        confidences[ses] = confidence_down
+
+for k in [k for k, v in patterns.items() if v == "Weak"]: #remove weak
+    del patterns[k]
+    del confidences[k]
+
+subs_taken=list(patterns.keys())
+subs_pattern_B = [k for k, v in patterns.items() if v == "Pattern B"]
+confidences_multi = {k: (v if patterns[k] == "Pattern B" else -v) for k, v in confidences.items()}
+
+stop=1
+
+
+############################################################################## MI
+
 def plotting_psds(data_received, labels_MI):
     unique_labels = np.unique(labels_MI)
 
@@ -110,47 +249,46 @@ def plotting_psds(data_received, labels_MI):
     # Save the plot
     plt.savefig(fr"MI_{ses}.png")
     plt.clf()
-    return (avgs_x_l, avgs_y_l,avgs_x_r, avgs_y_r)
-def plotting_rest_maps(data):
-    
-    # Define a custom colormap
-    colors = [
-        (0, 'blue'),   # Low values
-        (0.3, 'skyblue'),  # Middle values (around 0)
-        (0.5, 'black'),  # Middle values (around 0)
-        (0.7, 'lightyellow'),  # Middle values (around 0)
-        (1, 'yellow')       # High values
-    ]
-    custom_cmap = LinearSegmentedColormap.from_list("custom_cmap", colors)
 
-    # Plot heatmap
-    plt.figure(figsize=(8, 6))
-    plt.imshow(
-        data,
-        aspect='auto',
-        cmap=custom_cmap,
-        interpolation='nearest',
-        vmin=-4,   # Set minimum value for color scale
-        vmax=4    # Set maximum value for color scale
-    )
-    plt.colorbar(label="Value")
-    plt.title(fr"{ses} Left hemi - Right hemi")
-    plt.xlabel("Time")
-    plt.ylabel("Frequency")
-    plt.ylim(0, 20)  # Ensure y-axis matches the full range
-    plt.savefig(fr"Rest_{ses}.png")
-    plt.close()  # Close the figure to free memory
+    dx = avgs_x_r - avgs_x_l
+    dy = avgs_y_r - avgs_y_l
 
-    return()
+    return (dx,dy)
 def process_mi_data(raw, mat_data):
     raw.filter(f_low_MI, f_high_MI, fir_design='firwin') # FIR filtration to keep a range of frequencies
+
+
+
+    df = pd.read_csv(fr"25montage.csv", header=None, names=["name", "x", "y", "z"])
+    ch_pos = {
+        str(row['name']): np.array([row['x'], row['y'], row['z']])
+        for _, row in df.iterrows()
+    }
+
+    montage = mne.channels.make_dig_montage(ch_pos=ch_pos, coord_frame='head')
+    raw.set_montage(montage, on_missing="warn")
+
+
+    valid_chs = [
+        ch['ch_name'] for ch in raw.info['chs']
+        if ch['loc'] is not None
+        and not np.allclose(ch['loc'][:3], 0)
+        and not np.isnan(ch['loc'][:3]).any()
+]
+
+    raw = raw.copy().pick_channels(valid_chs)
+
+    raw = mne.preprocessing.compute_current_source_density(raw)
+
+
 
     events = np.squeeze(mat_data['data'][0][3][0][0][2]) # only the first run of each session is taken (total number of trials is 48, only left and right hand considered so 24)
     event_indices = np.squeeze(mat_data['data'][0][3][0][0][1])
     mne_events = np.column_stack((event_indices, np.zeros_like(event_indices), events))
-    
+    picks = ["8", "9", "14", "15","2","3",   "11", "12", "17", "18", "5", "6"] 
+
     event_id_MI = dict({'769': 1, '770': 2})
-    epochs_MI = mne.Epochs(raw, mne_events, event_id_MI, tmin_MI, tmax_MI, proj=True,  baseline=None, preload=True)
+    epochs_MI = mne.Epochs(raw, mne_events, event_id_MI, tmin_MI, tmax_MI, proj=True,  baseline=None, preload=True, picks=picks)
     labels_MI = epochs_MI.events[:, -1]
     data_MI_original = epochs_MI.get_data()
 
@@ -179,211 +317,40 @@ def generate_training_MI_models(data_MI,labels_MI):
     predictions = lda.predict(data_MI.reshape(num_points, -1))
     accuracy_psd = accuracy_score(labels_MI, predictions)
     return (model_parameters,accuracy_psd,lda)
-def rest_mi_relationships(mi_1_f,mi_2_f,rest_f):
-    clusters = {
-        0: [0,2,4,6,8,10,12,14,16,1,3,5,9,11,13,15,17],
-    }
-
-    for key, indices in clusters.items():
-        mi_1 = np.abs([mi_1_f[i] for i in indices])
-        mi_2 = np.abs([mi_2_f[i] for i in indices])
-        rest = np.abs([rest_f[i] for i in indices])
-
-        fig, axes = plt.subplots(1, 2, figsize=(12, 5))  # 1 row, 2 columns
-
-        # Plot 1: Left MI vs Rest Diff (Swapped Axes)
-        model = LinearRegression()
-        model.fit(np.array(rest).reshape(-1, 1), np.array(mi_1).reshape(-1, 1))  # Swap inputs
-        predicted = model.predict(np.array(rest).reshape(-1, 1))
-        r2 = r2_score(mi_1, predicted)
-        spearman_corr1, _ = spearmanr(rest, mi_1)
-
-        axes[0].scatter(rest, mi_1, color='blue', label='Data points')
-        axes[0].plot(rest, predicted, color='red')
-        axes[0].set_xlabel('|Left Hemi PSD - Right Hemi PSD| during Rest')
-        axes[0].set_ylabel(r'|Left Hemi PSD - Right Hemi PSD| during LH')
-        axes[0].grid(True)
-        axes[0].set_xlim(0, 0.5)  # Adjust x-axis limits (previous y-axis)
-        axes[0].set_ylim(0, 0.015)  # Adjust y-axis limits (previous x-axis)
-
-        # Add R² text to the left plot
-        axes[0].text(0.05, 0.012, f'$R^2$ = {r2:.3f}', fontsize=12, color='red', bbox=dict(facecolor='white', alpha=0.5))
-
-        # Plot 2: Right MI vs Rest Diff (Swapped Axes)
-        model = LinearRegression()
-        model.fit(np.array(rest).reshape(-1, 1), np.array(mi_2).reshape(-1, 1))  # Swap inputs
-        predicted = model.predict(np.array(rest).reshape(-1, 1))
-        r2 = r2_score(mi_2, predicted)
-        spearman_corr2, _ = spearmanr(rest, mi_2)
-
-        axes[1].scatter(rest, mi_2, color='blue', label='Data points')
-        axes[1].plot(rest, predicted, color='red')
-        axes[1].set_xlabel('|Left Hemi PSD - Right Hemi PSD| during Rest')
-        axes[1].set_ylabel(r'|Left Hemi PSD - Right Hemi PSD| during RH}')
-        axes[1].grid(True)
-        axes[1].set_xlim(0, 0.5)  # Adjust x-axis limits (previous y-axis)
-        axes[1].set_ylim(0, 0.015)  # Adjust y-axis limits (previous x-axis)
-
-        # Add R² text to the right plot
-        axes[1].text(0.05, 0.012, f'$R^2$ = {r2:.3f}', fontsize=12, color='red', bbox=dict(facecolor='white', alpha=0.5))
-
-        # Adjust layout and save the combined plot
-        plt.tight_layout()
-        plt.savefig(fr"Combined_corr_{key}.png")
-        plt.clf()
-
-    return()
-def multiple_regression(my_dependent_variables,my_independent_variables):
-    model = LinearRegression()
-    model.fit(my_independent_variables, my_dependent_variables)
-    return model
-def corrs():
-    values_group1 = [data_rest_diff_tf_abs_avg_time_and_desired_freq_dic[k] for k in data_rest_diff_tf_abs_avg_time_and_desired_freq_dic if k in keys_group1]
-    values_group2 = [data_rest_diff_tf_abs_avg_time_and_desired_freq_dic[k] for k in data_rest_diff_tf_abs_avg_time_and_desired_freq_dic if k in keys_group2]
-    f_stat, p_value = f_oneway(values_group1, values_group2)
-    plt.figure(figsize=(8, 6))
-    plt.boxplot([values_group1, values_group2], labels=["A", "B"])
-    plt.ylabel("Rest diff")
-    plt.title(fr"f:{f_stat},pval:{p_value}")
-    plt.savefig("C_anova.png")
-
-    values_group1 = [sp_mets_left[k] for k in sp_mets_left if k in keys_group1]
-    values_group2 = [sp_mets_left[k] for k in sp_mets_left if k in keys_group2]
-    f_stat, p_value = f_oneway(values_group1, values_group2)
-    plt.figure(figsize=(8, 6))
-    plt.boxplot([values_group1, values_group2], labels=["A", "B"])
-    plt.ylabel("sp_mets_left")
-    plt.title(fr"f:{f_stat},pval:{p_value}")
-    plt.savefig("sp_mets_left.png")
-
-    values_group1 = [sp_mets_right[k] for k in sp_mets_right if k in keys_group1]
-    values_group2 = [sp_mets_right[k] for k in sp_mets_right if k in keys_group2]
-    f_stat, p_value = f_oneway(values_group1, values_group2)
-    plt.figure(figsize=(8, 6))
-    plt.boxplot([values_group1, values_group2], labels=["A", "B"])
-    plt.ylabel("sp_mets_right")
-    plt.title(fr"f:{f_stat},pval:{p_value}")
-    plt.savefig("sp_mets_right.png")
-
-    return()
-def tl():
-    clusters =[list(keys_group1),list(keys_group2)]
-    acc_return=[]
-    for cluster in clusters:
-        accuracies=[]
-        all_keys= cluster
-        for test_i in all_keys:
-            training_keys= [key for key in all_keys if key != test_i]
-            if len(training_keys)!=1:
-                training_models=np.array([MI_models[a] for a in training_keys]).squeeze()
-            else:
-                training_models=np.array(MI_models[training_keys[0]])
-            training_rest_features=np.array([data_rest_diff_tf_abs_dic[a] for a in training_keys])
-            training_rest_features_tf=np.mean(training_rest_features[:,6:14,60:70],axis=2).reshape(training_rest_features.shape[0],-1)
-            
-
-            model=multiple_regression(training_models,training_rest_features_tf)
-            www=np.mean(data_rest_diff_tf_abs_dic[test_i][6:14,60:70],axis=1)[np.newaxis, :]
-            y_pred=model.predict(www)
-            lda_constructed = LDA()
-            lda_constructed.coef_ = np.array([y_pred[0,0:25]])
-            lda_constructed.intercept_ = np.array([y_pred[0,-1]])
-            lda_constructed.classes_ =  np.array([1,2])
-            # 6:14 is the frequency, the other is time
-            y_pred_y=lda_constructed.predict(data_MI_dic[test_i].squeeze())
-
-            accuracies.append(accuracy_score(labels_MI_dic[test_i], y_pred_y))
-
-            plt.plot(lda_constructed.coef_.ravel(),label="constructed")
-            plt.plot(orig_classifiers[test_i].coef_.ravel(),label="original")
-            plt.legend()    
-            plt.savefig(fr"classifiers_{test_i}")
-            plt.clf()
-
-        acc_mean=np.mean(accuracies)
-        acc_return.append(acc_mean)
-    return(acc_return)
-def get_sparsity(data_mi_stacked,labels_MI):
-    unique_labels = np.unique(labels_MI)
-    for label in unique_labels:
-        # Get points corresponding to the current label
-        label_points = data_mi_stacked[labels_MI == label]
-        
-        tree = KDTree(label_points)
-        distances, _ = tree.query(data_mi_stacked, k=2)  # Find the nearest neighbor
-        nearest_distances = distances[:, 1]  # Exclude self-distance
-        sparsity_metrics[label] = np.mean(nearest_distances)
-    return(sparsity_metrics[1],sparsity_metrics[2])
-def plotting_both(data,y,classifier_constructed,classifier_original,testing_sub,orig_acc,cons_acc):
-    x0=data[:,0];x1=data[:,1]
-    plt.figure()
-    plt.scatter(x0, x1, c=y, cmap='viridis', edgecolors='k')
-
-    # Create grid to evaluate model
-    xx, yy = np.meshgrid(np.linspace(-7, 7, 100),
-                        np.linspace(-7, 7, 100))
-    zz1 = classifier_original.predict(np.c_[xx.ravel(), yy.ravel()])
-    #zz2 = classifier_constructed.predict(np.c_[xx.ravel(), yy.ravel()])
-    zz1 = zz1.reshape(xx.shape)   
-    #zz2 = zz2.reshape(xx.shape)
-
-    # Plot decision boundary
-    plt.contourf(xx, yy, zz1, alpha=0.5, cmap='viridis')
-    #plt.contourf(xx, yy, zz2, alpha=0.5, cmap='viridis')
-
-    plt.xlabel('Feature 1')
-    plt.ylabel('Feature 2')
-    plt.title(fr"orig: {orig_acc}, cons:{cons_acc}")
-    plt.savefig(fr"{testing_sub}_both")
+def res_plotting(x_vals,y_vals,keys,subs_pattern_B):
+    # Plot
     plt.clf()
-    #plt.show()
-    return()
-def plotting_both_3(data,y,classifier_constructed,classifier_original,testing_sub,orig_acc,cons_acc):
-   x0=data[:,0];x1=data[:,1];x2=data[:,2]
-   # Plot data points
-   fig = plt.figure()
-   ax = fig.add_subplot(111, projection='3d')
-   ax.scatter(x0, x1, x2, c=y, cmap='viridis', edgecolors='k')
 
-   # Plot decision boundary
-   xlim = ax.get_xlim()
-   ylim = ax.get_ylim()
-   zlim = ax.get_zlim()
+    # Add x=0 and y=0 lines
+    plt.axvline(x=0, color='gray', linestyle='--', linewidth=1)
+    plt.axhline(y=0, color='gray', linestyle='--', linewidth=1)
+    # plt.xscale('symlog', linthresh=.00001)  
+    # plt.yscale('symlog', linthresh=.00001)
 
-   # Create grid to evaluate model
-   xx, yy = np.meshgrid(np.linspace(xlim[0], xlim[1], 10),
-                        np.linspace(ylim[0], ylim[1], 10))
-   zz = (-classifier_constructed.intercept_[0] - classifier_constructed.coef_[0][0]*xx - classifier_constructed.coef_[0][1]*yy) / classifier_constructed.coef_[0][2]
-   zz2 = (-classifier_original.intercept_[0] - classifier_original.coef_[0][0]*xx - classifier_original.coef_[0][1]*yy) / classifier_original.coef_[0][2]
-    
-   # Plot separating plane
-   ax.plot_surface(xx, yy, zz, alpha=0.5, label='Constructed Decision Boundary')
-   ax.plot_surface(xx, yy, zz2, alpha=0.5, label='Original Decision Boundary')
+    # Plot points and labels with appropriate color
+    for x, y, label in zip(x_vals, y_vals, keys):
+        color = 'black' if label in subs_pattern_B else 'red'
+        plt.scatter(x, y, color=color)
+        # plt.xscale('symlog', linthresh=1e-5)  # Adjust linthresh for better visibility
+        # plt.yscale('symlog', linthresh=1e-5)
+        plt.text(x, y, label, fontsize=9, ha='right', va='bottom', color=color)
+    plt.savefig(fr"final")
+def res_stats(x_vals,y_vals,confidences_multi):
+    r_x, p_value_x = pearsonr(np.array(x_vals).flatten(),  np.array(list(confidences_multi.values())).flatten())
+    r_y, p_value_y = pearsonr(np.array(y_vals).flatten(),  np.array(list(confidences_multi.values())).flatten())
+    print(r_x, p_value_x)
+    print(r_y, p_value_y)
 
-   plt.xlabel('Feature 1')
-   plt.ylabel('Feature 2')
-   ax.set_zlabel('Feature 3')
-   plt.title(fr"{testing_sub}___orig: {orig_acc}, cons:{cons_acc}")
-   ax.legend()
-   plt.savefig("decision_boundary_{}.png".format(testing_sub))
-   #plt.show()
-   return()
+    X = np.column_stack((x_vals, y_vals))  # shape (n_samples, 2)
+    y = np.array(list(confidences_multi.values()))
 
-##################################### Inputs
-sfreq = 250 # sampling frequency
-sess=[i for i in range(0,18)] # list of sessions (for all 9 subjects). Two sessions per subject so the total is 18.
-f_low_rest=1   # low frequency
-f_high_rest=15 # high frequency
-f_low_MI=8   # low frequency
-f_high_MI=12 # high frequency
-tmin_rest = 1  # start of time for rest[s]
-tmax_rest = 59 # end time for rest [s]
-tmin_MI = 1
-tmax_MI = 4
-##################################### Data Prep
-keys_group1 = {10,11,14,15,16} 
-keys_group2 = {5,17} 
+    model = LinearRegression()
+    model.fit(X, y)
 
+    X = sm.add_constant(X)  # adds intercept
+    model = sm.OLS(y, X).fit()
+    print(model.summary())
+    stop=1
 
 psd_pt_LH_left_hemi={}
 psd_pt_LH_right_hemi={}
@@ -391,95 +358,55 @@ psd_pt_RH_left_hemi={}
 psd_pt_RH_right_hemi={}
 MI_models = {}
 data_MI_dic= {}
-left_mi_avg_over_time_and_freq={}
-right_mi_avg_over_time_and_freq={}
-data_rest_diff_tf_abs_avg_time_and_desired_freq_list=[]
-data_rest_diff_tf_abs_avg_time_and_desired_freq_dic={}
-data_rest_diff_tf_abs_dic={}
-accuracies_psd={}
-sp_mets_left={}
-sp_mets_right={}
-labels_MI_dic={}
-sparsity_metrics={}
-sp_mets_left={}
-sp_mets_right={}
-data_MI_original_dic={}
-averages_left_l={}
-averages_right_l={}
-averages_left_r={}
-averages_right_r={}
-orig_classifiers={}
-for ses in sess:
-    ##########################################################
-    # Process Rest Data
-    ##########################################################
-    rest_data, _= load_data(ses, 'rest')
-    raw = create_mne_raw(rest_data)
-    _,_, data_rest_diff_tf_abs = process_rest_data(raw) # number 1 is left hemisphere, 2 is right hemisphere
-    plotting_rest_maps(data_rest_diff_tf_abs)
-    
-    data_rest_diff_tf_abs_avg_time=np.mean(np.squeeze(data_rest_diff_tf_abs),axis=1) 
-    data_rest_diff_tf_abs_avg_time_and_desired_freq_list.append(np.mean(data_rest_diff_tf_abs_avg_time[7:13]))
-    data_rest_diff_tf_abs_avg_time_and_desired_freq_dic[ses]=np.mean(data_rest_diff_tf_abs[7:13,:])
-    data_rest_diff_tf_abs_dic[ses]=data_rest_diff_tf_abs
-        
+delta_x_dic={}
+delta_y_dic={}
+my_dic_x={}
+my_dic_y={}
 
-    ##########################################################
-    # Process MI Data
-    ##########################################################
+for ses in sess:
     mi_data, mat_data = load_data(ses, 'mi')
     raw = create_mne_raw(mi_data)
 
     data_MI, labels_MI,data_MI_original,MI_tf = process_mi_data(raw, mat_data)
-    data_MI_original_dic[ses]=data_MI_original
     data_MI_dic[ses]=data_MI     
-    labels_MI_dic[ses]=labels_MI
-
 
     data_MI_tf_abs_avg_freq=np.mean(np.squeeze(MI_tf),axis=2) 
     data_MI_tf_abs_avg_freq_time=np.mean(np.squeeze(data_MI_tf_abs_avg_freq),axis=2) 
 
-    data_MI_tf_abs_avg_freq_time_left_hemi=np.mean(data_MI_tf_abs_avg_freq_time[:, 0:4], axis=1) 
-    data_MI_tf_abs_avg_freq_time_right_hemi=np.mean(data_MI_tf_abs_avg_freq_time[:, 4:8], axis=1) 
-    
+    data_MI_tf_abs_avg_freq_time_left_hemi=np.mean(data_MI_tf_abs_avg_freq_time[:, :6], axis=1) 
+    data_MI_tf_abs_avg_freq_time_right_hemi=np.mean(data_MI_tf_abs_avg_freq_time[:, 6:], axis=1) 
+
 
     left_d = [data_MI_tf_abs_avg_freq_time_left_hemi[i] - data_MI_tf_abs_avg_freq_time_right_hemi[i] for i in range(len(data_MI_tf_abs_avg_freq_time_left_hemi)) if labels_MI[i] == 1]
     right_d = [data_MI_tf_abs_avg_freq_time_left_hemi[i] - data_MI_tf_abs_avg_freq_time_right_hemi[i] for i in range(len(data_MI_tf_abs_avg_freq_time_left_hemi)) if labels_MI[i] == 2]
-    left_mi_avg_over_time_and_freq[ses]=np.mean(left_d)
-    right_mi_avg_over_time_and_freq[ses]=np.mean(right_d)
 
     data_mi_stacked_tf = np.vstack((data_MI_tf_abs_avg_freq_time_left_hemi, data_MI_tf_abs_avg_freq_time_right_hemi)).T  # Combine along the second axis
 
-    model_parameters,accuracy_psd,orig_classifier=generate_training_MI_models(data_MI, labels_MI) # each session (only the first run) has an LDA classifier
-    accuracies_psd[ses]=accuracy_psd
-    MI_models[ses]=model_parameters
-    orig_classifiers[ses]=orig_classifier
-    
-    data_mi_avg_left = np.mean(data_MI[:, 0:4, :], axis=1)  # Left hemisphere channels
-    data_mi_avg_right = np.mean(data_MI[:, 4:8, :], axis=1)  # Right hemisphere channels
+    data_mi_avg_left = np.mean(data_MI[:, :6, :], axis=1)  # Left hemisphere channels
+    data_mi_avg_right = np.mean(data_MI[:, 6:, :], axis=1)  # Right hemisphere channels
     data_mi_stacked = np.hstack((data_mi_avg_left, data_mi_avg_right))  # Combine along the second axis
-    
-    sp_left, sp_right=get_sparsity(data_mi_stacked,labels_MI)
-    sp_mets_left[ses]=sp_left
-    sp_mets_right[ses]=sp_right
 
-    xs_l, ys_l, xs_r, ys_r=plotting_psds(data_mi_stacked_tf,labels_MI)
+    dx,dy=plotting_psds(data_mi_stacked_tf,labels_MI)
+       
+    delta_x_dic[ses]=dx
+    delta_y_dic[ses]=dy
 
-    averages_left_l[ses]=xs_l
-    averages_right_l[ses]=ys_l
-    averages_left_r[ses]=xs_r
-    averages_right_r[ses]=ys_r
-
-
-##########################################################
-left_MI_psd_diff = np.array(list(averages_left_l.values())) - np.array(list(averages_right_l.values()))
-right_MI_psd_diff = np.array(list(averages_left_r.values())) - np.array(list(averages_right_r.values()))
+############################################################################## Both
+for k in range(1,19):
+    if k not in subs_taken:
+        del delta_x_dic[k]
+        del delta_y_dic[k]
 
 
-rest_mi_relationships(left_mi_avg_over_time_and_freq,right_mi_avg_over_time_and_freq,data_rest_diff_tf_abs_avg_time_and_desired_freq_dic)
-corrs()
-acc_cluster=tl()
+x_vals = [delta_x_dic[k] for k in delta_x_dic]
+y_vals = [delta_y_dic[k] for k in delta_y_dic]  
+keys = list(delta_y_dic.keys())
 
+res_plotting(x_vals,y_vals,keys,subs_pattern_B)
+res_stats(x_vals,y_vals,confidences_multi)
 
 # number 7 is wrong so don't consider it
+
+# channel location
+# why all is +ve
 stop=1

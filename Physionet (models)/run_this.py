@@ -7,10 +7,10 @@ import numpy as np
 import tensorflow as tf
 
 
-zeros=[1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 30, 31, 32, 33, 34, 37, 39, 40, 41, 43, 45, 46, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 61, 63, 64, 66, 67, 68, 69, 70, 71, 73, 74, 75, 76, 77, 79, 80, 81, 82, 83, 85, 86, 87, 90, 91, 93, 94, 96, 97, 99, 101, 102, 105, 106, 107, 109]
+# zeros=[1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 30, 31, 32, 33, 34, 37, 39, 40, 41, 43, 45, 46, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 61, 63, 64, 66, 67, 68, 69, 70, 71, 73, 74, 75, 76, 77, 79, 80, 81, 82, 83, 85, 86, 87, 90, 91, 93, 94, 96, 97, 99, 101, 102, 105, 106, 107, 109]
 
-filenames = [f"S{str(e).zfill(3)}" for e in zeros if len(f"S{str(e).zfill(3)}") == 4]
-full_res=[]
+# filenames = [f"S{str(e).zfill(3)}" for e in zeros if len(f"S{str(e).zfill(3)}") == 4]
+# full_res=[]
 
 #runs=5
 
@@ -69,9 +69,12 @@ full_res=[]
 # pd.DataFrame(full_res).to_csv("ress.csv")
 
 
-
-full_list=[i for i in range(109)]
+full_res=[]
+#full_list=[84,106,27,23,25,45,15]
+full_list=[84,106,4,98,94,16,33]
+#full_list=[i for i in range(1,110)]
 subs_considered = [f"S{str(e).zfill(3)}" for e in full_list if len(f"S{str(e).zfill(3)}") == 4]
+
 temp_res=run_experiments(subs_considered,full_res)
 
 stop=1

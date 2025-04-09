@@ -318,11 +318,8 @@ def get_models(trial_type, nb_classes, samples, use_cpu):
     else:
         K.set_image_data_format('channels_first')
     return {
-        'EEGNet_fusion': model.Model('EEGNet_fusion', trial_type, [(0, 8), (14, 22), (28, 36)],
-                                     EEGNet_fusion(nb_classes, Samples=samples, cpu=use_cpu), multi_branch=True),
-        'EEGNet': model.Model('EEGNet', trial_type, [(0, 8)], EEGNet(nb_classes, Samples=samples, cpu=use_cpu)),
-        'ShallowConvNet': model.Model('ShallowConvNet', trial_type, [(0, 2)],
-                                      ShallowConvNet(nb_classes, Samples=samples, cpu=use_cpu)),
-        'DeepConvNet': model.Model('DeepConvNet', trial_type, [(0, 8), (14, 22), (28, 36)],
-                                   DeepConvNet(nb_classes, Samples=samples, cpu=use_cpu)),
+        'EEGNet_fusion': model.Model('EEGNet_fusion', trial_type, [(0, 8), (14, 22), (28, 36)],EEGNet_fusion(nb_classes, Samples=samples, cpu=use_cpu), multi_branch=True),
+        #'EEGNet': model.Model('EEGNet', trial_type, [(0, 8)], EEGNet(nb_classes, Samples=samples, cpu=use_cpu)),
+        #'ShallowConvNet': model.Model('ShallowConvNet', trial_type, [(0, 2)],ShallowConvNet(nb_classes, Samples=samples, cpu=use_cpu)),
+        #'DeepConvNet': model.Model('DeepConvNet', trial_type, [(0, 8), (14, 22), (28, 36)],DeepConvNet(nb_classes, Samples=samples, cpu=use_cpu))
     }

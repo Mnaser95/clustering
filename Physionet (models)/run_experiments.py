@@ -29,18 +29,20 @@ def run_experiments(subs_considered,full_res):
 
     set_seed(42)
 
-    nr_of_epochs = 25
+    nr_of_epochs = 75
     nb_classes = 2
     trial_type = 2 # 2: imagined
     use_cpu = True 
-    base_folder=fr'C:\\Users\\mohd9\\OneDrive - Kennesaw State University\\Desktop\\EEGMotorImagery-master\\data\\'
+    base_folder=fr'C:\Users\mnaser1\OneDrive - Kennesaw State University\Desktop\PhD-S7\Dissertation\Data\data\\'
 
     # Loading data from files
     X, y = load_data(FNAMES=subs_considered, trial_type=trial_type, chunk_data=True, 
-                    chunks=8, base_folder=base_folder, sample_rate=160,
+                    chunks=2, base_folder=base_folder, sample_rate=160,
                     samples=640,cpu_format=use_cpu,
                     preprocessing=True, hp_freq=0.5, bp_low=2, bp_high=60, notch=True,
                     hp_filter=False, bp_filter=True, artifact_removal=True)
+
+
 
     # Data formatting
     if use_cpu:
